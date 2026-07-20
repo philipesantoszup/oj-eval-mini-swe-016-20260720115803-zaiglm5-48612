@@ -84,6 +84,11 @@ private:
         return node;
     }
     
+    // Compare only string parts for navigation purposes
+    int compareStrOnly(const Key& key, const string& index) {
+        return strcmp(key.str, index.c_str());
+    }
+    
 public:
     BPTree() { loadOrInit(); }
     ~BPTree() { if (dataFile) { fflush(dataFile); fclose(dataFile); } }
@@ -111,8 +116,7 @@ public:
         while (!node.isLeaf) {
             path.push_back(current);
             int i = 0;
-            // Use < comparison, not <= 
-            // This ensures keys with same string go to the rightmost child
+            // Use < for string-only comparison
             while (i < node.numKeys && strcmp(node.keys[i].str, index.c_str()) < 0) i++;
             childIdx.push_back(i);
             current = node.children[i];
@@ -248,7 +252,6 @@ public:
         
         while (!node.isLeaf) {
             int i = 0;
-            // Use < comparison
             while (i < node.numKeys && strcmp(node.keys[i].str, index.c_str()) < 0) i++;
             current = node.children[i];
             node = readNode(current);
