@@ -54,7 +54,6 @@ private:
             dataFile = fopen(DATA_FILE.c_str(), "wb+");
             rootPos = -1;
             fwrite(&rootPos, sizeof(int), 1, dataFile);
-            fflush(dataFile);
         } else {
             fread(&rootPos, sizeof(int), 1, dataFile);
         }
@@ -87,7 +86,7 @@ private:
     
 public:
     BPTree() { loadOrInit(); }
-    ~BPTree() { if (dataFile) fclose(dataFile); }
+    ~BPTree() { if (dataFile) { fflush(dataFile); fclose(dataFile); } }
     
     void insert(const string& index, int value) {
         Key key(index, value);
@@ -101,7 +100,6 @@ public:
             writeNode(pos, node);
             rootPos = pos;
             writeRoot();
-            fflush(dataFile);
             return;
         }
         
@@ -135,11 +133,9 @@ public:
         
         if (node.numKeys < ORDER) {
             writeNode(current, node);
-            fflush(dataFile);
             return;
         }
         
-        // Split leaf
         int mid = node.numKeys / 2;
         int newLeaf = allocNode();
         BPTNode right;
@@ -172,7 +168,6 @@ public:
             writeNode(newRoot, root);
             rootPos = newRoot;
             writeRoot();
-            fflush(dataFile);
             return;
         }
         
@@ -193,11 +188,9 @@ public:
         
         if (pNode.numKeys < ORDER) {
             writeNode(parent, pNode);
-            fflush(dataFile);
             return;
         }
         
-        // Split internal node
         int mid = pNode.numKeys / 2;
         int newInternal = allocNode();
         BPTNode rightNode;
@@ -239,7 +232,6 @@ public:
                 }
                 node.numKeys--;
                 writeNode(current, node);
-                fflush(dataFile);
                 return;
             }
         }
