@@ -111,7 +111,9 @@ public:
         while (!node.isLeaf) {
             path.push_back(current);
             int i = 0;
-            while (i < node.numKeys && strcmp(node.keys[i].str, index.c_str()) <= 0) i++;
+            // Use < comparison, not <= 
+            // This ensures keys with same string go to the rightmost child
+            while (i < node.numKeys && strcmp(node.keys[i].str, index.c_str()) < 0) i++;
             childIdx.push_back(i);
             current = node.children[i];
             node = readNode(current);
@@ -220,7 +222,7 @@ public:
         
         while (!node.isLeaf) {
             int i = 0;
-            while (i < node.numKeys && strcmp(node.keys[i].str, index.c_str()) <= 0) i++;
+            while (i < node.numKeys && strcmp(node.keys[i].str, index.c_str()) < 0) i++;
             current = node.children[i];
             node = readNode(current);
         }
@@ -246,7 +248,8 @@ public:
         
         while (!node.isLeaf) {
             int i = 0;
-            while (i < node.numKeys && strcmp(node.keys[i].str, index.c_str()) <= 0) i++;
+            // Use < comparison
+            while (i < node.numKeys && strcmp(node.keys[i].str, index.c_str()) < 0) i++;
             current = node.children[i];
             node = readNode(current);
         }
