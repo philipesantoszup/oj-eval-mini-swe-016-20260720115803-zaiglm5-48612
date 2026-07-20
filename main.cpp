@@ -4,7 +4,6 @@
 #include <cstring>
 #include <vector>
 #include <algorithm>
-#include <climits>
 
 using namespace std;
 
@@ -21,8 +20,6 @@ struct Key {
         strncpy(str, s.c_str(), sizeof(str) - 1);
     }
     
-    string getString() const { return string(str); }
-    
     bool operator<(const Key& other) const {
         int cmp = strcmp(str, other.str);
         if (cmp != 0) return cmp < 0;
@@ -31,14 +28,6 @@ struct Key {
     
     bool operator==(const Key& other) const {
         return strcmp(str, other.str) == 0 && value == other.value;
-    }
-    
-    bool operator<=(const Key& other) const {
-        return !(other < *this);
-    }
-    
-    bool operator>(const Key& other) const {
-        return other < *this;
     }
 };
 
@@ -56,68 +45,49 @@ struct BPTNode {
 
 class BPTree {
 private:
-    fstream dataFile;
+    FILE* dataFile;
     int rootPos;
     
-    void clearAll() {
-        dataFile.close();
-        dataFile.open(DATA_FILE, ios::out | ios::binary | ios::trunc);
-        dataFile.close();
-        dataFile.open(DATA_FILE, ios::in | ios::out | ios::binary);
-        
-        rootPos = -1;
-        dataFile.write(reinterpret_cast<char*>(&rootPos), sizeof(int));
-        dataFile.flush();
+    void loadOrInit() {
+        dataFile = fopen(DATA_FILE.c_str(), "rb+");
+        if (!dataFile) {
+            dataFile = fopen(DATA_FILE.c_str(), "wb+");
+            rootPos = -1;
+            fwrite(&rootPos, sizeof(int), 1, dataFile);
+            fflush(dataFile);
+        } else {
+            fread(&rootPos, sizeof(int), 1, dataFile);
+        }
     }
     
-    void load() {
-        dataFile.seekg(0, ios::beg);
-        dataFile.read(reinterpret_cast<char*>(&rootPos), sizeof(int));
-    }
-    
-    void saveRoot() {
-        dataFile.seekp(0, ios::beg);
-        dataFile.write(reinterpret_cast<char*>(&rootPos), sizeof(int));
-        dataFile.flush();
+    void writeRoot() {
+        fseek(dataFile, 0, SEEK_SET);
+        fwrite(&rootPos, sizeof(int), 1, dataFile);
     }
     
     int allocNode() {
-        dataFile.seekp(0, ios::end);
-        int pos = dataFile.tellp();
+        fseek(dataFile, 0, SEEK_END);
+        int pos = ftell(dataFile);
         BPTNode node;
-        dataFile.write(reinterpret_cast<char*>(&node), sizeof(BPTNode));
-        dataFile.flush();
+        fwrite(&node, sizeof(BPTNode), 1, dataFile);
         return pos;
     }
     
-    void writeNodeS(int pos, const BPTNode& node) {
-        dataFile.seekp(pos, ios::beg);
-        dataFile.write(reinterpret_cast<const char*>(&node), sizeof(BPTNode));
-        dataFile.flush();
+    void writeNode(int pos, const BPTNode& node) {
+        fseek(dataFile, pos, SEEK_SET);
+        fwrite(&node, sizeof(BPTNode), 1, dataFile);
     }
     
-    BPTNode readNodeS(int pos) {
+    BPTNode readNode(int pos) {
         BPTNode node;
-        dataFile.seekg(pos, ios::beg);
-        dataFile.read(reinterpret_cast<char*>(&node), sizeof(BPTNode));
+        fseek(dataFile, pos, SEEK_SET);
+        fread(&node, sizeof(BPTNode), 1, dataFile);
         return node;
     }
     
 public:
-    BPTree() {
-        dataFile.open(DATA_FILE, ios::in | ios::binary);
-        if (!dataFile.is_open()) {
-            clearAll();
-        } else {
-            dataFile.close();
-            dataFile.open(DATA_FILE, ios::in | ios::out | ios::binary);
-            load();
-        }
-    }
-    
-    ~BPTree() {
-        if (dataFile.is_open()) dataFile.close();
-    }
+    BPTree() { loadOrInit(); }
+    ~BPTree() { if (dataFile) fclose(dataFile); }
     
     void insert(const string& index, int value) {
         Key key(index, value);
@@ -128,26 +98,25 @@ public:
             node.isLeaf = true;
             node.keys[0] = key;
             node.numKeys = 1;
-            writeNodeS(pos, node);
+            writeNode(pos, node);
             rootPos = pos;
-            saveRoot();
+            writeRoot();
+            fflush(dataFile);
             return;
         }
         
         vector<int> path;
         vector<int> childIdx;
         int current = rootPos;
-        BPTNode node = readNodeS(current);
+        BPTNode node = readNode(current);
         
         while (!node.isLeaf) {
             path.push_back(current);
             int i = 0;
-            while (i < node.numKeys && strcmp(node.keys[i].str, index.c_str()) <= 0) {
-                i++;
-            }
+            while (i < node.numKeys && strcmp(node.keys[i].str, index.c_str()) <= 0) i++;
             childIdx.push_back(i);
             current = node.children[i];
-            node = readNodeS(current);
+            node = readNode(current);
         }
         
         for (int i = 0; i < node.numKeys; i++) {
@@ -165,100 +134,102 @@ public:
         node.numKeys++;
         
         if (node.numKeys < ORDER) {
-            writeNodeS(current, node);
+            writeNode(current, node);
+            fflush(dataFile);
             return;
         }
         
+        // Split leaf
         int mid = node.numKeys / 2;
         int newLeaf = allocNode();
-        BPTNode rightNode;
-        rightNode.isLeaf = true;
+        BPTNode right;
+        right.isLeaf = true;
         
         for (int j = mid; j < node.numKeys; j++) {
-            rightNode.keys[j - mid] = node.keys[j];
+            right.keys[j - mid] = node.keys[j];
         }
-        rightNode.numKeys = node.numKeys - mid;
-        rightNode.next = node.next;
+        right.numKeys = node.numKeys - mid;
+        right.next = node.next;
         node.numKeys = mid;
         node.next = newLeaf;
         
-        writeNodeS(current, node);
-        writeNodeS(newLeaf, rightNode);
+        writeNode(current, node);
+        writeNode(newLeaf, right);
         
-        Key splitKey = rightNode.keys[0];
-        splitUp(path, childIdx, splitKey, current, newLeaf);
+        Key splitKey = right.keys[0];
+        insertParent(path, childIdx, splitKey, current, newLeaf);
     }
     
-    void splitUp(vector<int>& path, vector<int>& childIdx, Key splitKey, int leftChild, int rightChild) {
-        while (!path.empty()) {
-            int parent = path.back();
-            path.pop_back();
-            int idx = childIdx.back();
-            childIdx.pop_back();
-            
-            BPTNode pNode = readNodeS(parent);
-            
-            for (int j = pNode.numKeys; j > idx; j--) {
-                pNode.keys[j] = pNode.keys[j - 1];
-                pNode.children[j + 1] = pNode.children[j];
-            }
-            pNode.keys[idx] = splitKey;
-            pNode.children[idx] = leftChild;
-            pNode.children[idx + 1] = rightChild;
-            pNode.numKeys++;
-            
-            if (pNode.numKeys < ORDER) {
-                writeNodeS(parent, pNode);
-                return;
-            }
-            
-            int mid = pNode.numKeys / 2;
-            int newNode = allocNode();
-            BPTNode internal;
-            internal.isLeaf = false;
-            
-            splitKey = pNode.keys[mid];
-            
-            for (int j = mid + 1; j < pNode.numKeys; j++) {
-                internal.keys[j - mid - 1] = pNode.keys[j];
-                internal.children[j - mid - 1] = pNode.children[j];
-            }
-            internal.children[pNode.numKeys - mid - 1] = pNode.children[pNode.numKeys];
-            internal.numKeys = pNode.numKeys - mid - 1;
-            pNode.numKeys = mid;
-            
-            writeNodeS(parent, pNode);
-            writeNodeS(newNode, internal);
-            
-            leftChild = parent;
-            rightChild = newNode;
+    void insertParent(vector<int>& path, vector<int>& childIdx, Key splitKey, int leftChild, int rightChild) {
+        if (path.empty()) {
+            int newRoot = allocNode();
+            BPTNode root;
+            root.isLeaf = false;
+            root.keys[0] = splitKey;
+            root.children[0] = leftChild;
+            root.children[1] = rightChild;
+            root.numKeys = 1;
+            writeNode(newRoot, root);
+            rootPos = newRoot;
+            writeRoot();
+            fflush(dataFile);
+            return;
         }
         
-        int newRoot = allocNode();
-        BPTNode root;
-        root.isLeaf = false;
-        root.keys[0] = splitKey;
-        root.children[0] = leftChild;
-        root.children[1] = rightChild;
-        root.numKeys = 1;
-        writeNodeS(newRoot, root);
-        rootPos = newRoot;
-        saveRoot();
+        int parent = path.back();
+        path.pop_back();
+        int idx = childIdx.back();
+        childIdx.pop_back();
+        
+        BPTNode pNode = readNode(parent);
+        
+        for (int j = pNode.numKeys; j > idx; j--) {
+            pNode.keys[j] = pNode.keys[j - 1];
+            pNode.children[j + 1] = pNode.children[j];
+        }
+        pNode.keys[idx] = splitKey;
+        pNode.children[idx + 1] = rightChild;
+        pNode.numKeys++;
+        
+        if (pNode.numKeys < ORDER) {
+            writeNode(parent, pNode);
+            fflush(dataFile);
+            return;
+        }
+        
+        // Split internal node
+        int mid = pNode.numKeys / 2;
+        int newInternal = allocNode();
+        BPTNode rightNode;
+        rightNode.isLeaf = false;
+        
+        splitKey = pNode.keys[mid];
+        
+        for (int j = mid + 1; j < pNode.numKeys; j++) {
+            rightNode.keys[j - mid - 1] = pNode.keys[j];
+            rightNode.children[j - mid - 1] = pNode.children[j];
+        }
+        rightNode.children[pNode.numKeys - mid - 1] = pNode.children[pNode.numKeys];
+        rightNode.numKeys = pNode.numKeys - mid - 1;
+        pNode.numKeys = mid;
+        
+        writeNode(parent, pNode);
+        writeNode(newInternal, rightNode);
+        
+        insertParent(path, childIdx, splitKey, parent, newInternal);
     }
     
     void deleteKey(const string& index, int value) {
         if (rootPos == -1) return;
         
         int current = rootPos;
-        BPTNode node = readNodeS(current);
+        BPTNode node = readNode(current);
         
         while (!node.isLeaf) {
             int i = 0;
-            while (i < node.numKeys && strcmp(node.keys[i].str, index.c_str()) <= 0) {
-                i++;
-            }
+            while (i < node.numKeys && strcmp(node.keys[i].str, index.c_str()) <= 0) i++;
             current = node.children[i];
-            node = readNodeS(current);
+            node = readNode(current);
         }
         
         for (int i = 0; i < node.numKeys; i++) {
@@ -267,7 +238,8 @@ public:
                     node.keys[j] = node.keys[j + 1];
                 }
                 node.numKeys--;
-                writeNodeS(current, node);
+                writeNode(current, node);
+                fflush(dataFile);
                 return;
             }
         }
@@ -278,30 +250,23 @@ public:
         if (rootPos == -1) return result;
         
         int current = rootPos;
-        BPTNode node = readNodeS(current);
+        BPTNode node = readNode(current);
         
         while (!node.isLeaf) {
             int i = 0;
-            while (i < node.numKeys && strcmp(node.keys[i].str, index.c_str()) <= 0) {
-                i++;
-            }
+            while (i < node.numKeys && strcmp(node.keys[i].str, index.c_str()) <= 0) i++;
             current = node.children[i];
-            node = readNodeS(current);
+            node = readNode(current);
         }
         
         while (current != -1) {
             for (int i = 0; i < node.numKeys; i++) {
                 int cmp = strcmp(node.keys[i].str, index.c_str());
-                if (cmp == 0) {
-                    result.push_back(node.keys[i].value);
-                } else if (cmp > 0) {
-                    return result;
-                }
+                if (cmp == 0) result.push_back(node.keys[i].value);
+                else if (cmp > 0) return result;
             }
             current = node.next;
-            if (current != -1) {
-                node = readNodeS(current);
-            }
+            if (current != -1) node = readNode(current);
         }
         return result;
     }
