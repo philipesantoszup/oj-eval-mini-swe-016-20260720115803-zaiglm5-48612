@@ -4,16 +4,15 @@
 #include <cstring>
 #include <vector>
 #include <algorithm>
-#include <sstream>
 #include <climits>
 
 using namespace std;
 
-const int ORDER = 200; // B+ tree order (max keys per node)
+const int ORDER = 200;
 const string DATA_FILE = "bpt_data.bin";
 
 struct Key {
-    char str[72];
+    char str[80];
     int value;
     
     Key() : value(0) { memset(str, 0, sizeof(str)); }
@@ -41,10 +40,6 @@ struct Key {
     bool operator>(const Key& other) const {
         return other < *this;
     }
-    
-    bool operator>=(const Key& other) const {
-        return !(*this < other);
-    }
 };
 
 struct BPTNode {
@@ -53,126 +48,114 @@ struct BPTNode {
     Key keys[ORDER];
     int children[ORDER + 1];
     int next;
-    int prev;
     
-    BPTNode() : isLeaf(true), numKeys(0), next(-1), prev(-1) {
-        memset(children, -1, sizeof(children));
+    BPTNode() : isLeaf(true), numKeys(0), next(-1) {
+        for (int i = 0; i < ORDER + 1; i++) children[i] = -1;
     }
 };
 
-const int HEADER_SIZE = sizeof(int);
-
 class BPTree {
 private:
-    fstream file;
+    fstream dataFile;
     int rootPos;
     
-    int allocateNode() {
-        file.seekp(0, ios::end);
-        int pos = file.tellp();
+    void clearAll() {
+        dataFile.close();
+        dataFile.open(DATA_FILE, ios::out | ios::binary | ios::trunc);
+        dataFile.close();
+        dataFile.open(DATA_FILE, ios::in | ios::out | ios::binary);
+        
+        rootPos = -1;
+        dataFile.write(reinterpret_cast<char*>(&rootPos), sizeof(int));
+        dataFile.flush();
+    }
+    
+    void load() {
+        dataFile.seekg(0, ios::beg);
+        dataFile.read(reinterpret_cast<char*>(&rootPos), sizeof(int));
+    }
+    
+    void saveRoot() {
+        dataFile.seekp(0, ios::beg);
+        dataFile.write(reinterpret_cast<char*>(&rootPos), sizeof(int));
+        dataFile.flush();
+    }
+    
+    int allocNode() {
+        dataFile.seekp(0, ios::end);
+        int pos = dataFile.tellp();
         BPTNode node;
-        file.write(reinterpret_cast<char*>(&node), sizeof(BPTNode));
-        file.flush();
+        dataFile.write(reinterpret_cast<char*>(&node), sizeof(BPTNode));
+        dataFile.flush();
         return pos;
     }
     
-    void writeNode(int pos, BPTNode* node) {
-        file.seekp(pos, ios::beg);
-        file.write(reinterpret_cast<char*>(node), sizeof(BPTNode));
-        file.flush();
+    void writeNodeS(int pos, const BPTNode& node) {
+        dataFile.seekp(pos, ios::beg);
+        dataFile.write(reinterpret_cast<const char*>(&node), sizeof(BPTNode));
+        dataFile.flush();
     }
     
-    void readNode(int pos, BPTNode* node) {
-        file.seekg(pos, ios::beg);
-        file.read(reinterpret_cast<char*>(node), sizeof(BPTNode));
-    }
-    
-    void writeRoot() {
-        file.seekp(0, ios::beg);
-        file.write(reinterpret_cast<char*>(&rootPos), sizeof(int));
-        file.flush();
-    }
-    
-    void initFile() {
-        file.open(DATA_FILE, ios::in | ios::out | ios::binary);
-        if (!file.is_open()) {
-            file.open(DATA_FILE, ios::out | ios::binary);
-            rootPos = -1;
-            file.write(reinterpret_cast<char*>(&rootPos), sizeof(int));
-            file.close();
-            file.open(DATA_FILE, ios::in | ios::out | ios::binary);
-        }
-        file.read(reinterpret_cast<char*>(&rootPos), sizeof(int));
-    }
-    
-    int findLeaf(const string& index) {
-        if (rootPos == -1) return -1;
-        
-        int current = rootPos;
+    BPTNode readNodeS(int pos) {
         BPTNode node;
-        readNode(current, &node);
-        
-        while (!node.isLeaf) {
-            Key searchKey(index, INT_MIN);
-            int i = 0;
-            while (i < node.numKeys && node.keys[i] <= searchKey) {
-                i++;
-            }
-            if (i >= node.numKeys) {
-                current = node.children[node.numKeys];
-            } else {
-                current = node.children[i];
-            }
-            readNode(current, &node);
-        }
-        return current;
+        dataFile.seekg(pos, ios::beg);
+        dataFile.read(reinterpret_cast<char*>(&node), sizeof(BPTNode));
+        return node;
     }
     
 public:
-    BPTree() { initFile(); }
-    ~BPTree() { if (file.is_open()) file.close(); }
+    BPTree() {
+        dataFile.open(DATA_FILE, ios::in | ios::binary);
+        if (!dataFile.is_open()) {
+            clearAll();
+        } else {
+            dataFile.close();
+            dataFile.open(DATA_FILE, ios::in | ios::out | ios::binary);
+            load();
+        }
+    }
+    
+    ~BPTree() {
+        if (dataFile.is_open()) dataFile.close();
+    }
     
     void insert(const string& index, int value) {
         Key key(index, value);
         
         if (rootPos == -1) {
-            int newPos = allocateNode();
+            int pos = allocNode();
             BPTNode node;
             node.isLeaf = true;
             node.keys[0] = key;
             node.numKeys = 1;
-            writeNode(newPos, &node);
-            rootPos = newPos;
-            writeRoot();
+            writeNodeS(pos, node);
+            rootPos = pos;
+            saveRoot();
             return;
         }
         
         vector<int> path;
-        vector<int> indices;
+        vector<int> childIdx;
         int current = rootPos;
-        BPTNode node;
-        readNode(current, &node);
+        BPTNode node = readNodeS(current);
         
-        Key searchKey(index, INT_MIN);
         while (!node.isLeaf) {
             path.push_back(current);
             int i = 0;
-            while (i < node.numKeys && node.keys[i] <= searchKey) {
+            while (i < node.numKeys && strcmp(node.keys[i].str, index.c_str()) <= 0) {
                 i++;
             }
-            indices.push_back(i);
+            childIdx.push_back(i);
             current = node.children[i];
-            readNode(current, &node);
+            node = readNodeS(current);
         }
         
-        // Check duplicate
         for (int i = 0; i < node.numKeys; i++) {
             if (strcmp(node.keys[i].str, index.c_str()) == 0 && node.keys[i].value == value) {
                 return;
             }
         }
         
-        // Insert into leaf
         int i = node.numKeys - 1;
         while (i >= 0 && key < node.keys[i]) {
             node.keys[i + 1] = node.keys[i];
@@ -182,130 +165,109 @@ public:
         node.numKeys++;
         
         if (node.numKeys < ORDER) {
-            writeNode(current, &node);
-        } else {
-            // Split
-            int mid = node.numKeys / 2;
-            int newLeafPos = allocateNode();
-            BPTNode newLeaf;
-            newLeaf.isLeaf = true;
-            
-            for (int j = mid; j < node.numKeys; j++) {
-                newLeaf.keys[j - mid] = node.keys[j];
-            }
-            newLeaf.numKeys = node.numKeys - mid;
-            node.numKeys = mid;
-            
-            newLeaf.next = node.next;
-            newLeaf.prev = current;
-            node.next = newLeafPos;
-            
-            writeNode(current, &node);
-            writeNode(newLeafPos, &newLeaf);
-            
-            Key splitKey = newLeaf.keys[0];
-            
-            if (path.empty()) {
-                // New root
-                int newRootPos = allocateNode();
-                BPTNode newRoot;
-                newRoot.isLeaf = false;
-                newRoot.keys[0] = splitKey;
-                newRoot.children[0] = current;
-                newRoot.children[1] = newLeafPos;
-                newRoot.numKeys = 1;
-                writeNode(newRootPos, &newRoot);
-                rootPos = newRootPos;
-                writeRoot();
-            } else {
-                // Insert into parent
-                while (!path.empty()) {
-                    int parentPos = path.back();
-                    path.pop_back();
-                    int idx = indices.back();
-                    indices.pop_back();
-                    
-                    BPTNode parent;
-                    readNode(parentPos, &parent);
-                    
-                    // Shift keys and children
-                    for (int j = parent.numKeys; j > idx; j--) {
-                        parent.keys[j] = parent.keys[j - 1];
-                        parent.children[j + 1] = parent.children[j];
-                    }
-                    parent.keys[idx] = splitKey;
-                    parent.children[idx + 1] = newLeafPos;
-                    parent.numKeys++;
-                    
-                    if (parent.numKeys < ORDER) {
-                        writeNode(parentPos, &parent);
-                        break;
-                    } else {
-                        // Split internal node
-                        mid = parent.numKeys / 2;
-                        int newInternalPos = allocateNode();
-                        BPTNode newInternal;
-                        newInternal.isLeaf = false;
-                        
-                        splitKey = parent.keys[mid];
-                        
-                        for (int j = mid + 1; j < parent.numKeys; j++) {
-                            newInternal.keys[j - mid - 1] = parent.keys[j];
-                            newInternal.children[j - mid - 1] = parent.children[j];
-                        }
-                        newInternal.children[parent.numKeys - mid - 1] = parent.children[parent.numKeys];
-                        newInternal.numKeys = parent.numKeys - mid - 1;
-                        parent.numKeys = mid;
-                        
-                        writeNode(parentPos, &parent);
-                        writeNode(newInternalPos, &newInternal);
-                        newLeafPos = newInternalPos;
-                        
-                        if (path.empty()) {
-                            int newRootPos = allocateNode();
-                            BPTNode newRoot;
-                            newRoot.isLeaf = false;
-                            newRoot.keys[0] = splitKey;
-                            newRoot.children[0] = parentPos;
-                            newRoot.children[1] = newInternalPos;
-                            newRoot.numKeys = 1;
-                            writeNode(newRootPos, &newRoot);
-                            rootPos = newRootPos;
-                            writeRoot();
-                            break;
-                        }
-                    }
-                }
-            }
+            writeNodeS(current, node);
+            return;
         }
+        
+        int mid = node.numKeys / 2;
+        int newLeaf = allocNode();
+        BPTNode rightNode;
+        rightNode.isLeaf = true;
+        
+        for (int j = mid; j < node.numKeys; j++) {
+            rightNode.keys[j - mid] = node.keys[j];
+        }
+        rightNode.numKeys = node.numKeys - mid;
+        rightNode.next = node.next;
+        node.numKeys = mid;
+        node.next = newLeaf;
+        
+        writeNodeS(current, node);
+        writeNodeS(newLeaf, rightNode);
+        
+        Key splitKey = rightNode.keys[0];
+        splitUp(path, childIdx, splitKey, current, newLeaf);
+    }
+    
+    void splitUp(vector<int>& path, vector<int>& childIdx, Key splitKey, int leftChild, int rightChild) {
+        while (!path.empty()) {
+            int parent = path.back();
+            path.pop_back();
+            int idx = childIdx.back();
+            childIdx.pop_back();
+            
+            BPTNode pNode = readNodeS(parent);
+            
+            for (int j = pNode.numKeys; j > idx; j--) {
+                pNode.keys[j] = pNode.keys[j - 1];
+                pNode.children[j + 1] = pNode.children[j];
+            }
+            pNode.keys[idx] = splitKey;
+            pNode.children[idx] = leftChild;
+            pNode.children[idx + 1] = rightChild;
+            pNode.numKeys++;
+            
+            if (pNode.numKeys < ORDER) {
+                writeNodeS(parent, pNode);
+                return;
+            }
+            
+            int mid = pNode.numKeys / 2;
+            int newNode = allocNode();
+            BPTNode internal;
+            internal.isLeaf = false;
+            
+            splitKey = pNode.keys[mid];
+            
+            for (int j = mid + 1; j < pNode.numKeys; j++) {
+                internal.keys[j - mid - 1] = pNode.keys[j];
+                internal.children[j - mid - 1] = pNode.children[j];
+            }
+            internal.children[pNode.numKeys - mid - 1] = pNode.children[pNode.numKeys];
+            internal.numKeys = pNode.numKeys - mid - 1;
+            pNode.numKeys = mid;
+            
+            writeNodeS(parent, pNode);
+            writeNodeS(newNode, internal);
+            
+            leftChild = parent;
+            rightChild = newNode;
+        }
+        
+        int newRoot = allocNode();
+        BPTNode root;
+        root.isLeaf = false;
+        root.keys[0] = splitKey;
+        root.children[0] = leftChild;
+        root.children[1] = rightChild;
+        root.numKeys = 1;
+        writeNodeS(newRoot, root);
+        rootPos = newRoot;
+        saveRoot();
     }
     
     void deleteKey(const string& index, int value) {
         if (rootPos == -1) return;
         
         int current = rootPos;
-        BPTNode node;
-        readNode(current, &node);
+        BPTNode node = readNodeS(current);
         
-        // Find leaf
-        Key searchKey(index, INT_MIN);
         while (!node.isLeaf) {
             int i = 0;
-            while (i < node.numKeys && node.keys[i] <= searchKey) {
+            while (i < node.numKeys && strcmp(node.keys[i].str, index.c_str()) <= 0) {
                 i++;
             }
             current = node.children[i];
-            readNode(current, &node);
+            node = readNodeS(current);
         }
         
-        // Find and delete
         for (int i = 0; i < node.numKeys; i++) {
             if (strcmp(node.keys[i].str, index.c_str()) == 0 && node.keys[i].value == value) {
                 for (int j = i; j < node.numKeys - 1; j++) {
                     node.keys[j] = node.keys[j + 1];
                 }
                 node.numKeys--;
-                writeNode(current, &node);
+                writeNodeS(current, node);
                 return;
             }
         }
@@ -316,32 +278,29 @@ public:
         if (rootPos == -1) return result;
         
         int current = rootPos;
-        BPTNode node;
-        readNode(current, &node);
+        BPTNode node = readNodeS(current);
         
-        Key searchKey(index, INT_MIN);
         while (!node.isLeaf) {
             int i = 0;
-            while (i < node.numKeys && node.keys[i] <= searchKey) {
+            while (i < node.numKeys && strcmp(node.keys[i].str, index.c_str()) <= 0) {
                 i++;
             }
             current = node.children[i];
-            readNode(current, &node);
+            node = readNodeS(current);
         }
         
-        // Traverse leaf nodes
         while (current != -1) {
             for (int i = 0; i < node.numKeys; i++) {
-                string keyStr = node.keys[i].getString();
-                if (keyStr == index) {
+                int cmp = strcmp(node.keys[i].str, index.c_str());
+                if (cmp == 0) {
                     result.push_back(node.keys[i].value);
-                } else if (keyStr > index) {
+                } else if (cmp > 0) {
                     return result;
                 }
             }
             current = node.next;
             if (current != -1) {
-                readNode(current, &node);
+                node = readNodeS(current);
             }
         }
         return result;
